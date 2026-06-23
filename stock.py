@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from pmdarima import auto_arima
 from statsmodels.tsa.arima.model import ARIMA
 
 st.set_page_config(
@@ -11,10 +10,6 @@ st.set_page_config(
 )
 
 st.title("📈 Indian Stock Forecasting using ARIMA")
-
-st.write(
-    "Forecast stock prices using the last 5 years of Yahoo Finance data."
-)
 
 ticker = st.text_input(
     "Enter NSE Stock Ticker",
@@ -25,72 +20,46 @@ if st.button("Generate Forecast"):
 
     try:
 
-        # -----------------------------
-        # Download Data
-        # -----------------------------
-        with st.spinner("Downloading stock data..."):
-
-            data = yf.download(
-                ticker,
-                period="5y",
-                progress=False,
-                auto_adjust=True
-            )
+        # Download 5 years data
+        data = yf.download(
+            ticker,
+            period="5y",
+            auto_adjust=True,
+            progress=False
+        )
 
         if data.empty:
             st.error("No data found for this ticker.")
             st.stop()
 
+        # Fix yfinance MultiIndex issue
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+
         data = data[["Close"]].dropna()
 
-        st.subheader("Last 5 Years Historical Data")
-
+        st.subheader("Historical Data")
         st.dataframe(data.tail())
 
-        # -----------------------------
-        # Monthly Resampling
-        # -----------------------------
-        monthly_data = data.resample("ME").last()
+        # Monthly closing prices
+        monthly_data = data.resample("M").last()
 
-        st.subheader("Monthly Closing Prices")
-
-        st.dataframe(monthly_data.tail())
-
-        # -----------------------------
-        # Auto ARIMA
-        # -----------------------------
-        with st.spinner("Finding best ARIMA model..."):
-
-            auto_model = auto_arima(
-                monthly_data["Close"],
-                seasonal=False,
-                stepwise=True,
-                suppress_warnings=True,
-                error_action="ignore",
-                trace=False,
-                max_p=5,
-                max_q=5
-            )
-
-        order = auto_model.order
-
-        st.success(f"Selected ARIMA Order: {order}")
-
-        # -----------------------------
-        # Train Model
-        # -----------------------------
+        # ARIMA Model
         model = ARIMA(
             monthly_data["Close"],
-            order=order
+            order=(5, 1, 0)
         )
 
         model_fit = model.fit()
 
-        # -----------------------------
-        # Forecast Till June 2027
-        # -----------------------------
-        forecast_end = pd.Timestamp("2027-06-30")
+        st.subheader("ARIMA Model Details")
 
+        st.write("ARIMA Order: (5,1,0)")
+        st.write(f"AIC: {round(model_fit.aic,2)}")
+        st.write(f"BIC: {round(model_fit.bic,2)}")
+
+        # Forecast till June 2027
+        forecast_end = pd.Timestamp("2027-06-30")
         last_date = monthly_data.index[-1]
 
         months = (
@@ -99,7 +68,7 @@ if st.button("Generate Forecast"):
             - last_date.month
         )
 
-        if months <= 0:
+        if months < 1:
             months = 12
 
         forecast_result = model_fit.get_forecast(
@@ -111,7 +80,7 @@ if st.button("Generate Forecast"):
         future_dates = pd.date_range(
             start=last_date + pd.offsets.MonthEnd(1),
             periods=months,
-            freq="ME"
+            freq="M"
         )
 
         forecast_df = pd.DataFrame(
@@ -121,9 +90,10 @@ if st.button("Generate Forecast"):
             index=future_dates
         )
 
-        # -----------------------------
+        st.subheader("Forecast Data")
+        st.dataframe(forecast_df)
+
         # June 2027 Forecast
-        # -----------------------------
         june_2027 = forecast_df[
             (forecast_df.index.year == 2027)
             & (forecast_df.index.month == 6)
@@ -139,31 +109,20 @@ if st.button("Generate Forecast"):
             )
 
             st.metric(
-                "Expected Stock Price",
+                "Expected Price in June 2027",
                 f"₹ {predicted_price}"
             )
 
             st.dataframe(june_2027)
 
-        # -----------------------------
-        # Forecast Table
-        # -----------------------------
-        st.subheader("Forecast Data")
-
-        st.dataframe(
-            forecast_df
-        )
-
-        # -----------------------------
         # Graph
-        # -----------------------------
         fig = go.Figure()
 
         fig.add_trace(
             go.Scatter(
                 x=monthly_data.index,
                 y=monthly_data["Close"],
-                mode="lines+markers",
+                mode="lines",
                 name="Historical Prices"
             )
         )
@@ -173,12 +132,18 @@ if st.button("Generate Forecast"):
                 x=forecast_df.index,
                 y=forecast_df["Forecast Price"],
                 mode="lines+markers",
-                name="Forecast Prices"
+                name="ARIMA Forecast"
             )
         )
 
+        fig.add_vline(
+            x=monthly_data.index[-1],
+            line_dash="dash",
+            annotation_text="Forecast Start"
+        )
+
         fig.update_layout(
-            title=f"{ticker} Stock Price Forecast",
+            title=f"{ticker} ARIMA Forecast till June 2027",
             xaxis_title="Date",
             yaxis_title="Price (₹)",
             height=650
@@ -189,17 +154,15 @@ if st.button("Generate Forecast"):
             use_container_width=True
         )
 
-        # -----------------------------
-        # Download CSV
-        # -----------------------------
+        # CSV Download
         csv = forecast_df.to_csv().encode("utf-8")
 
         st.download_button(
-            label="📥 Download Forecast CSV",
-            data=csv,
-            file_name=f"{ticker}_forecast.csv",
-            mime="text/csv"
+            "📥 Download Forecast CSV",
+            csv,
+            f"{ticker}_forecast.csv",
+            "text/csv"
         )
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error: {str(e)}")
